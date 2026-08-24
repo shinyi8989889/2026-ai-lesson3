@@ -3,11 +3,16 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 
-const dbPath = path.join(__dirname, '..', 'database.sqlite');
+// 可用 DATABASE_PATH 環境變數覆寫（例如測試時指向 ':memory:'）；未設定時維持原行為
+const dbPath = process.env.DATABASE_PATH
+  ? (process.env.DATABASE_PATH === ':memory:' ? ':memory:' : path.resolve(process.env.DATABASE_PATH))
+  : path.join(__dirname, '..', 'database.sqlite');
 const db = new Database(dbPath);
 
-// Enable WAL mode for better performance
-db.pragma('journal_mode = WAL');
+// Enable WAL mode for better performance（記憶體資料庫不支援 WAL，改用預設模式）
+if (dbPath !== ':memory:') {
+  db.pragma('journal_mode = WAL');
+}
 db.pragma('foreign_keys = ON');
 
 function initializeDatabase() {

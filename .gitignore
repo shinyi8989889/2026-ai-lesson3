@@ -39,3 +39,11 @@ coverage/
 .claude/*.local.json
 public/css/output.css
 qa.md
+
+# Playwright test artifacts
+test-results/
+playwright-report/
+e2e/screenshots/
+
+# 可由指令重新產生的產出物（npm run postman）
+postman/
