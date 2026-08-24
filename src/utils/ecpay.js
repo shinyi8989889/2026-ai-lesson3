@@ -79,15 +79,17 @@ function getMerchantTradeDate() {
     .replace(/-/g, '/');
 }
 
+function formatItemPart(item) {
+  return `${item.product_name} x${item.quantity} $${item.product_price * item.quantity}`;
+}
+
 function buildItemName(items) {
-  const name = items
-    .map((item) => `${item.product_name} x${item.quantity}`)
-    .join('#');
+  const name = items.map(formatItemPart).join('#');
 
   if (Buffer.byteLength(name, 'utf8') > 400) {
     let truncated = '';
     for (const item of items) {
-      const part = `${item.product_name} x${item.quantity}`;
+      const part = formatItemPart(item);
       const next = truncated ? truncated + '#' + part : part;
       if (Buffer.byteLength(next, 'utf8') > 390) {
         return truncated + '#...';

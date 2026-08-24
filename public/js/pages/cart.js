@@ -1,5 +1,12 @@
 const { createApp, ref, computed, onMounted } = Vue;
 
+// 與後端 src/utils/shipping.js 規則一致，購物車頁僅預覽「宅配」門檻與運費，
+// 實際運費仍依結帳頁選擇的配送方式於送出訂單時由伺服器計算。
+const SHIPPING_RATES = {
+  HOME_DELIVERY_BASE_FEE: 120,
+  FREE_SHIPPING_THRESHOLD: 1500
+};
+
 createApp({
   setup() {
     const items = ref([]);
@@ -11,6 +18,10 @@ createApp({
       return items.value.reduce(function (sum, item) {
         return sum + item.product.price * item.quantity;
       }, 0);
+    });
+
+    const shippingFee = computed(function () {
+      return total.value >= SHIPPING_RATES.FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_RATES.HOME_DELIVERY_BASE_FEE;
     });
 
     async function loadCart() {
@@ -68,7 +79,7 @@ createApp({
     });
 
     return {
-      items, loading, total, confirmVisible,
+      items, loading, total, shippingFee, confirmVisible,
       updateQuantity, confirmDelete, handleDelete, goCheckout
     };
   }

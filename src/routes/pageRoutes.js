@@ -67,6 +67,17 @@ router.get('/ecpay/payment/:orderId', function (req, res) {
     return res.redirect('/orders/' + order.id);
   }
   const items = db.prepare('SELECT product_name, product_price, quantity FROM order_items WHERE order_id = ?').all(order.id);
+
+  // 將運費列為獨立品項，使綠界付款頁的商品明細總額與 TotalAmount 一致（拆分商品與運費）
+  if (order.shipping_fee > 0) {
+    const methodLabel = order.shipping_method === 'cvs' ? '超商取貨' : '宅配';
+    const extras = [];
+    if (order.is_remote) extras.push('偏遠地區');
+    if (order.is_urgent) extras.push('當日急件');
+    const shippingLabel = '運費（' + [methodLabel, ...extras].join('・') + '）';
+    items.push({ product_name: shippingLabel, product_price: order.shipping_fee, quantity: 1 });
+  }
+
   const html = buildAioFormHtml(order, items);
   res.type('text/html').send(html);
 });

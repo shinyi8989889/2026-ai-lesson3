@@ -75,6 +75,28 @@ function initializeDatabase() {
     // Column already exists, ignore
   }
 
+  // Migration: add shipping fee related columns
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN shipping_fee INTEGER NOT NULL DEFAULT 0`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN shipping_method TEXT NOT NULL DEFAULT 'home_delivery'`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN is_remote INTEGER NOT NULL DEFAULT 0`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN is_urgent INTEGER NOT NULL DEFAULT 0`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Seed data
   seedAdminUser();
   seedProducts();

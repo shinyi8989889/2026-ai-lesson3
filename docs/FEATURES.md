@@ -7,13 +7,14 @@
 | 使用者認證 | ✅ 完成 | 註冊、登入、個人資料 |
 | 商品瀏覽 | ✅ 完成 | 公開商品列表與詳情 |
 | 購物車管理 | ✅ 完成 | 雙模式認證（JWT / Session ID） |
-| 訂單管理 | ✅ 完成 | 建立、查詢、模擬付款 |
+| 訂單管理 | ✅ 完成 | 建立（含運費計算）、查詢、模擬付款 |
+| 運費計算 | ✅ 完成 | 宅配/超商基本運費、滿額免運、偏遠地區與急件附加費（`src/utils/shipping.js`） |
 | 綠界金流串接 | ✅ 完成 | ECPay AIO 付款、QueryTradeInfo 查詢驗證 |
 | 後台商品管理 | ✅ 完成 | 商品 CRUD |
 | 後台訂單管理 | ✅ 完成 | 訂單查詢與狀態篩選 |
 | 前台頁面 | ✅ 完成 | EJS + Tailwind CSS |
 | 後台頁面 | ✅ 完成 | EJS + Tailwind CSS |
-| 測試 | ✅ 完成 | Vitest + supertest，6 個測試檔案 |
+| 測試 | ✅ 完成 | Vitest + supertest，7 個測試檔案 |
 | API 文件 | ✅ 完成 | Swagger/OpenAPI 生成 |
 
 ---
@@ -222,7 +223,7 @@
 
 ### POST /api/orders — 建立訂單
 
-**行為描述**：將購物車品項轉換為訂單。使用資料庫 transaction 確保「建立訂單 + 品項快照 + 扣庫存 + 清空購物車」的原子性。
+**行為描述**：將購物車品項轉換為訂單，並依配送方式與附加條件計算運費。使用資料庫 transaction 確保「建立訂單 + 品項快照 + 扣庫存 + 清空購物車」的原子性。
 
 **Request Body**：
 
@@ -231,17 +232,27 @@
 | recipientName | string | 是 | 非空 |
 | recipientEmail | string | 是 | 符合 email 正則 |
 | recipientAddress | string | 是 | 非空 |
+| shippingMethod | string | 否 | `home_delivery`（宅配，預設）或 `cvs`（超商取貨） |
+| isRemote | boolean | 否 | 是否為偏遠地區，預設 false |
+| isUrgent | boolean | 否 | 是否為當日急件，預設 false |
+
+**運費規則**（由 `src/utils/shipping.js` 計算，詳見 [ARCHITECTURE.md](./ARCHITECTURE.md#運費計算規則-srcutilsshippingjs)）：
+- 宅配基本運費 120 元；商品小計 ≥ 1,500 元免收
+- 超商取貨固定 60 元（非「基本運費」，不受滿額免運影響）
+- 偏遠地區加收 200 元、當日急件加收 250 元，皆可疊加
 
 **業務邏輯**：
 1. 驗證收件人三個欄位皆存在
 2. 驗證 recipientEmail 格式
-3. 從 `cart_items JOIN products` 取得購物車品項（僅查 `user_id`，不含 session）
-4. 購物車為空 → 400 CART_EMPTY
-5. 逐品項檢查庫存，不足者收集名稱 → 400「以下商品庫存不足：名稱1, 名稱2」
-6. 計算 `totalAmount = Σ(price × quantity)`
-7. 生成 `orderNo = ORD-YYYYMMDD-{5碼UUID大寫}`
-8. **Transaction**：INSERT order → INSERT order_items（快照名稱+價格） → UPDATE stock → DELETE cart_items
-9. 回傳 201 + 訂單詳情
+3. 驗證 shippingMethod（若提供）須為 `home_delivery` 或 `cvs`
+4. 從 `cart_items JOIN products` 取得購物車品項（僅查 `user_id`，不含 session）
+5. 購物車為空 → 400 CART_EMPTY
+6. 逐品項檢查庫存，不足者收集名稱 → 400「以下商品庫存不足：名稱1, 名稱2」
+7. 計算 `productSubtotal = Σ(price × quantity)`
+8. 呼叫 `calculateShippingFee()` 計算 `shippingFee`；`totalAmount = productSubtotal + shippingFee`
+9. 生成 `orderNo = ORD-YYYYMMDD-{5碼UUID大寫}`
+10. **Transaction**：INSERT order（含 shipping_fee/shipping_method/is_remote/is_urgent） → INSERT order_items（快照名稱+價格） → UPDATE stock → DELETE cart_items
+11. 回傳 201 + 訂單詳情（含 product_subtotal、shipping_fee、shipping_method、is_remote、is_urgent、total_amount）
 
 **錯誤情境**：
 
@@ -249,6 +260,7 @@
 |--------|--------|------|
 | 400 | VALIDATION_ERROR | 缺少收件人欄位 |
 | 400 | VALIDATION_ERROR | Email 格式不正確 |
+| 400 | VALIDATION_ERROR | shippingMethod 不是 home_delivery 或 cvs |
 | 400 | CART_EMPTY | 購物車為空 |
 | 400 | STOCK_INSUFFICIENT | 庫存不足（訊息中列出所有不足商品名稱） |
 

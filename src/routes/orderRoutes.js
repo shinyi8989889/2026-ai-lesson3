@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const authMiddleware = require('../middleware/authMiddleware');
 const { queryTradeInfo, verifyCheckMacValue, ECPAY_CONFIG } = require('../utils/ecpay');
+const { calculateShippingFee, SHIPPING_METHODS } = require('../utils/shipping');
 
 const router = express.Router();
 
@@ -13,6 +14,15 @@ function generateOrderNo() {
   const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
   const random = uuidv4().slice(0, 5).toUpperCase();
   return `ORD-${dateStr}-${random}`;
+}
+
+// Convert SQLite integer flags (0/1) to booleans for API responses
+function serializeOrder(order) {
+  return {
+    ...order,
+    is_remote: !!order.is_remote,
+    is_urgent: !!order.is_urgent,
+  };
 }
 
 /**
@@ -38,6 +48,16 @@ function generateOrderNo() {
  *                 format: email
  *               recipientAddress:
  *                 type: string
+ *               shippingMethod:
+ *                 type: string
+ *                 enum: [home_delivery, cvs]
+ *                 description: 配送方式，預設 home_delivery（宅配）。宅配基本運費 120 元，商品小計滿 1,500 元免收；超商取貨（cvs）固定 60 元，不受滿額免運影響。
+ *               isRemote:
+ *                 type: boolean
+ *                 description: 是否為偏遠地區，加收 200 元，預設 false
+ *               isUrgent:
+ *                 type: boolean
+ *                 description: 是否為當日急件，加收 250 元，預設 false
  *     responses:
  *       201:
  *         description: 訂單建立成功
@@ -53,6 +73,16 @@ function generateOrderNo() {
  *                       type: string
  *                     order_no:
  *                       type: string
+ *                     product_subtotal:
+ *                       type: integer
+ *                     shipping_fee:
+ *                       type: integer
+ *                     shipping_method:
+ *                       type: string
+ *                     is_remote:
+ *                       type: boolean
+ *                     is_urgent:
+ *                       type: boolean
  *                     total_amount:
  *                       type: integer
  *                     status:
@@ -80,6 +110,9 @@ function generateOrderNo() {
  */
 router.post('/', (req, res) => {
   const { recipientName, recipientEmail, recipientAddress } = req.body;
+  const shippingMethod = req.body.shippingMethod || SHIPPING_METHODS.HOME_DELIVERY;
+  const isRemote = !!req.body.isRemote;
+  const isUrgent = !!req.body.isUrgent;
   const userId = req.user.userId;
 
   if (!recipientName || !recipientEmail || !recipientAddress) {
@@ -96,6 +129,14 @@ router.post('/', (req, res) => {
       data: null,
       error: 'VALIDATION_ERROR',
       message: 'Email 格式不正確'
+    });
+  }
+
+  if (![SHIPPING_METHODS.HOME_DELIVERY, SHIPPING_METHODS.CVS].includes(shippingMethod)) {
+    return res.status(400).json({
+      data: null,
+      error: 'VALIDATION_ERROR',
+      message: 'shippingMethod 必須為 home_delivery 或 cvs'
     });
   }
 
@@ -127,10 +168,30 @@ router.post('/', (req, res) => {
     });
   }
 
-  // Calculate total
-  const totalAmount = cartItems.reduce(
+  // Calculate product subtotal
+  const productSubtotal = cartItems.reduce(
     (sum, item) => sum + item.product_price * item.quantity, 0
   );
+
+  // Calculate shipping fee
+  let shippingResult;
+  try {
+    shippingResult = calculateShippingFee({
+      subtotal: productSubtotal,
+      shippingMethod,
+      isRemote,
+      isUrgent,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      data: null,
+      error: 'VALIDATION_ERROR',
+      message: err.message
+    });
+  }
+
+  const shippingFee = shippingResult.totalFee;
+  const totalAmount = productSubtotal + shippingFee;
 
   const orderId = uuidv4();
   const orderNo = generateOrderNo();
@@ -139,9 +200,12 @@ router.post('/', (req, res) => {
   // Transaction: create order, order items, deduct stock, clear cart
   const createOrder = db.transaction(() => {
     db.prepare(
-      `INSERT INTO orders (id, order_no, user_id, recipient_name, recipient_email, recipient_address, total_amount, merchant_trade_no)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(orderId, orderNo, userId, recipientName, recipientEmail, recipientAddress, totalAmount, merchantTradeNo);
+      `INSERT INTO orders (id, order_no, user_id, recipient_name, recipient_email, recipient_address, total_amount, merchant_trade_no, shipping_fee, shipping_method, is_remote, is_urgent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      orderId, orderNo, userId, recipientName, recipientEmail, recipientAddress, totalAmount, merchantTradeNo,
+      shippingFee, shippingMethod, isRemote ? 1 : 0, isUrgent ? 1 : 0
+    );
 
     const insertItem = db.prepare(
       `INSERT INTO order_items (id, order_id, product_id, product_name, product_price, quantity)
@@ -169,6 +233,11 @@ router.post('/', (req, res) => {
     data: {
       id: order.id,
       order_no: order.order_no,
+      product_subtotal: productSubtotal,
+      shipping_fee: order.shipping_fee,
+      shipping_method: order.shipping_method,
+      is_remote: !!order.is_remote,
+      is_urgent: !!order.is_urgent,
       total_amount: order.total_amount,
       status: order.status,
       items: orderItems,
@@ -266,6 +335,14 @@ router.get('/', (req, res) => {
  *                       type: string
  *                     recipient_address:
  *                       type: string
+ *                     shipping_fee:
+ *                       type: integer
+ *                     shipping_method:
+ *                       type: string
+ *                     is_remote:
+ *                       type: boolean
+ *                     is_urgent:
+ *                       type: boolean
  *                     total_amount:
  *                       type: integer
  *                     status:
@@ -305,7 +382,7 @@ router.get('/:id', (req, res) => {
   const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
 
   res.json({
-    data: { ...order, items },
+    data: { ...serializeOrder(order), items },
     error: null,
     message: '成功'
   });
@@ -411,7 +488,7 @@ router.patch('/:id/pay', (req, res) => {
   const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
 
   res.json({
-    data: { ...updated, items },
+    data: { ...serializeOrder(updated), items },
     error: null,
     message: action === 'success' ? '付款成功' : '付款失敗'
   });
@@ -450,7 +527,7 @@ router.post('/:id/check-payment', async (req, res) => {
   if (order.status !== 'pending') {
     const items = db.prepare('SELECT product_name, product_price, quantity FROM order_items WHERE order_id = ?').all(order.id);
     return res.json({
-      data: { ...order, items },
+      data: { ...serializeOrder(order), items },
       error: null,
       message: order.status === 'paid' ? '此訂單已付款' : '此訂單付款失敗'
     });
@@ -468,7 +545,7 @@ router.post('/:id/check-payment', async (req, res) => {
       const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
       const items = db.prepare('SELECT product_name, product_price, quantity FROM order_items WHERE order_id = ?').all(order.id);
       return res.json({
-        data: { ...updated, items },
+        data: { ...serializeOrder(updated), items },
         error: null,
         message: '付款成功'
       });
@@ -476,7 +553,7 @@ router.post('/:id/check-payment', async (req, res) => {
 
     const items = db.prepare('SELECT product_name, product_price, quantity FROM order_items WHERE order_id = ?').all(order.id);
     return res.json({
-      data: { ...order, items, ecpay_trade_status: result.TradeStatus },
+      data: { ...serializeOrder(order), items, ecpay_trade_status: result.TradeStatus },
       error: null,
       message: '尚未完成付款，請稍後再查詢'
     });

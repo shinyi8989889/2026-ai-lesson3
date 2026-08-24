@@ -1,5 +1,15 @@
 const { createApp, ref, computed, onMounted } = Vue;
 
+// 與後端 src/utils/shipping.js 規則一致，僅供結帳頁即時試算顯示用；
+// 實際運費仍由伺服器於 POST /api/orders 時重新計算，此處變動須同步後端。
+const SHIPPING_RATES = {
+  HOME_DELIVERY_BASE_FEE: 120,
+  CVS_BASE_FEE: 60,
+  FREE_SHIPPING_THRESHOLD: 1500,
+  REMOTE_AREA_SURCHARGE: 200,
+  URGENT_SURCHARGE: 250,
+};
+
 createApp({
   setup() {
     if (!Auth.requireAuth()) return {};
@@ -7,13 +17,33 @@ createApp({
     const loading = ref(true);
     const submitting = ref(false);
     const cartItems = ref([]);
-    const form = ref({ recipientName: '', recipientEmail: '', recipientAddress: '' });
+    const form = ref({
+      recipientName: '',
+      recipientEmail: '',
+      recipientAddress: '',
+      shippingMethod: 'home_delivery',
+      isRemote: false,
+      isUrgent: false
+    });
     const errors = ref({});
 
     const cartTotal = computed(function () {
       return cartItems.value.reduce(function (sum, item) {
         return sum + item.product.price * item.quantity;
       }, 0);
+    });
+
+    const shippingFee = computed(function () {
+      const baseFee = form.value.shippingMethod === 'cvs'
+        ? SHIPPING_RATES.CVS_BASE_FEE
+        : (cartTotal.value >= SHIPPING_RATES.FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_RATES.HOME_DELIVERY_BASE_FEE);
+      const remoteSurcharge = form.value.isRemote ? SHIPPING_RATES.REMOTE_AREA_SURCHARGE : 0;
+      const urgentSurcharge = form.value.isUrgent ? SHIPPING_RATES.URGENT_SURCHARGE : 0;
+      return baseFee + remoteSurcharge + urgentSurcharge;
+    });
+
+    const orderTotal = computed(function () {
+      return cartTotal.value + shippingFee.value;
     });
 
     function validate() {
@@ -60,6 +90,6 @@ createApp({
       loading.value = false;
     });
 
-    return { loading, submitting, cartItems, form, errors, cartTotal, submitOrder };
+    return { loading, submitting, cartItems, form, errors, cartTotal, shippingFee, orderTotal, submitOrder };
   }
 }).mount('#app');
